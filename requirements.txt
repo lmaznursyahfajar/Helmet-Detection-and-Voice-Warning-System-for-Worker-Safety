@@ -5,3 +5,6 @@ torch
 gTTS
 playsound
 numpy
+opencv-python-headless
+torchvision
+pygame
