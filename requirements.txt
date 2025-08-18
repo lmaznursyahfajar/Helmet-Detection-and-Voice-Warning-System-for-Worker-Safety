@@ -1,10 +1,9 @@
 streamlit
-opencv-python
-ultralytics
-torch
-gTTS
-playsound
-numpy
 opencv-python-headless
+numpy
+torch
 torchvision
-pygame
+ultralytics
+pillow
+pandas
+gtts
