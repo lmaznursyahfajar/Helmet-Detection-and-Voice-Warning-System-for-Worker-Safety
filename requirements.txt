@@ -1,9 +1,9 @@
-streamlit
+ultralytics==8.2.50
 opencv-python-headless
 numpy
-torch
-torchvision
-ultralytics
 pillow
 pandas
-gtts
+openpyxl
+streamlit
+gTTS
+
