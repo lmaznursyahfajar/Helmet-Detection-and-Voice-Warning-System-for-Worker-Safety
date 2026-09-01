@@ -1,6 +1,7 @@
 streamlit>=1.39.0
 ultralytics
 opencv-python
+opencv-python-headless
 numpy
 Pillow
 gTTS
