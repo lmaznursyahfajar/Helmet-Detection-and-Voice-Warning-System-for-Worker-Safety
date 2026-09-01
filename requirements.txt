@@ -1,11 +1,8 @@
-streamlit>=1.39.0
-ultralytics
-opencv-python
 opencv-python-headless
+ultralytics
+streamlit>=1.39.0
 numpy
 Pillow
 gTTS
-pygame
 streamlit-webrtc
 openpyxl
-
