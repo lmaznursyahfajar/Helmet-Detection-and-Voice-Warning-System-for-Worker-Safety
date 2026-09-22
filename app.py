@@ -147,6 +147,9 @@ DEFAULTS = {
     "sound_enabled": True,
     "snapshot_enabled": True,
     "violation_classes": [],
+    "helmet_classes": [],
+    "person_classes": [],
+    "detection_mode": "class",
     "webcam_running": False,
     "session_total": 0,
     "session_violation": 0,
@@ -255,34 +258,110 @@ def save_snapshot(frame_bgr):
 # ========================================================================
 # INFERENSI
 # ========================================================================
-def run_detection(model, frame_bgr, conf, iou, violation_classes):
+def classify_semantics(class_names):
+    """Kelompokkan nama kelas model ke peran semantik, supaya sistem tidak
+    pernah menebak buta kelas mana yang berarti 'pelanggaran'.
+    Mengembalikan (kelas_pelanggaran, kelas_helm, kelas_orang, kelas_lain)."""
+    violation, helmet, person, other = [], [], [], []
+    for c in class_names:
+        lc = c.lower().replace(" ", "").replace("_", "").replace("-", "")
+        if any(k in lc for k in ["nohelmet", "nohardhat", "nohelm", "without", "tanpahelm", "unsafe"]) or lc == "head":
+            violation.append(c)
+        elif any(k in lc for k in ["helmet", "hardhat", "helm"]):
+            helmet.append(c)
+        elif any(k in lc for k in ["person", "orang", "pekerja", "worker", "human"]):
+            person.append(c)
+        else:
+            other.append(c)
+    return violation, helmet, person, other
+
+
+def boxes_overlap_ratio(box_a, box_b):
+    """Rasio luas irisan terhadap luas box_b — dipakai untuk menilai apakah
+    sebuah kotak helm berada pada zona kepala kotak orang."""
+    ax1, ay1, ax2, ay2 = box_a
+    bx1, by1, bx2, by2 = box_b
+    ix1, iy1 = max(ax1, bx1), max(ay1, by1)
+    ix2, iy2 = min(ax2, bx2), min(ay2, by2)
+    iw, ih = max(0, ix2 - ix1), max(0, iy2 - iy1)
+    inter = iw * ih
+    area_b = max(1, (bx2 - bx1) * (by2 - by1))
+    return inter / area_b
+
+
+def head_zone(person_box, ratio=0.4):
+    x1, y1, x2, y2 = person_box
+    return (x1, y1, x2, y1 + (y2 - y1) * ratio)
+
+
+def run_detection(model, frame_bgr, conf, iou, det_config):
     """frame_bgr: numpy array BGR (konvensi OpenCV).
+    det_config: {"mode": "class"|"overlap", "violation_classes": [...],
+                 "helmet_classes": [...], "person_classes": [...]}.
     Mengembalikan (frame_tergambar_BGR, jumlah_pelanggaran, total_terdeteksi)."""
     results = model(frame_bgr, conf=conf, iou=iou, verbose=False)
     drawn = frame_bgr.copy()
-    violations = 0
-    total = 0
-
+    boxes = []
     for r in results:
         for box, cls, cf in zip(r.boxes.xyxy, r.boxes.cls, r.boxes.conf):
-            label = model.names[int(cls)]
-            total += 1
             x1, y1, x2, y2 = map(int, box)
-            is_violation = label in violation_classes
-            color = (65, 82, 225) if is_violation else (124, 166, 73)  # BGR: merah / hijau
-            if is_violation:
-                violations += 1
+            boxes.append({"label": model.names[int(cls)], "box": (x1, y1, x2, y2), "conf": float(cf)})
 
-            cv2.rectangle(drawn, (x1, y1), (x2, y2), color, 2)
-            tag = f"{label} {cf * 100:.0f}%"
-            (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
-            cv2.rectangle(drawn, (x1, max(0, y1 - th - 10)), (x1 + tw + 8, y1), color, -1)
-            cv2.putText(drawn, tag, (x1 + 4, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+    if det_config["mode"] == "overlap":
+        drawn, violations, total = _draw_overlap_mode(drawn, boxes, det_config)
+    else:
+        drawn, violations, total = _draw_class_mode(drawn, boxes, det_config["violation_classes"])
 
     if violations > 0:
         banner = f"PELANGGARAN TERDETEKSI: {violations}"
         cv2.rectangle(drawn, (0, 0), (drawn.shape[1], 34), (65, 82, 225), -1)
         cv2.putText(drawn, banner, (12, 23), cv2.FONT_HERSHEY_SIMPLEX, 0.62, (255, 255, 255), 2, cv2.LINE_AA)
+
+    return drawn, violations, total
+
+
+def _draw_box(drawn, box, color, tag):
+    x1, y1, x2, y2 = box
+    cv2.rectangle(drawn, (x1, y1), (x2, y2), color, 2)
+    (tw, th), _ = cv2.getTextSize(tag, cv2.FONT_HERSHEY_SIMPLEX, 0.55, 2)
+    cv2.rectangle(drawn, (x1, max(0, y1 - th - 10)), (x1 + tw + 8, y1), color, -1)
+    cv2.putText(drawn, tag, (x1 + 4, y1 - 6), cv2.FONT_HERSHEY_SIMPLEX, 0.55, (255, 255, 255), 1, cv2.LINE_AA)
+
+
+def _draw_class_mode(drawn, boxes, violation_classes):
+    """Kotak dianggap pelanggaran murni berdasarkan nama kelasnya
+    (cocok untuk model dengan kelas eksplisit seperti 'no-helmet'/'head')."""
+    violations, total = 0, 0
+    for b in boxes:
+        total += 1
+        is_violation = b["label"] in violation_classes
+        color = (65, 82, 225) if is_violation else (124, 166, 73)  # BGR: merah / hijau
+        if is_violation:
+            violations += 1
+        _draw_box(drawn, b["box"], color, f"{b['label']} {b['conf'] * 100:.0f}%")
+    return drawn, violations, total
+
+
+def _draw_overlap_mode(drawn, boxes, det_config):
+    """Untuk model yang hanya punya kelas 'helm' dan 'orang' tanpa kelas
+    eksplisit 'tanpa helm': seseorang dianggap patuh hanya jika ada kotak
+    helm yang tumpang tindih signifikan dengan zona kepalanya."""
+    helmet_boxes = [b["box"] for b in boxes if b["label"] in det_config["helmet_classes"]]
+    person_boxes = [b for b in boxes if b["label"] in det_config["person_classes"]]
+
+    violations, total = 0, 0
+    for p in person_boxes:
+        total += 1
+        zone = head_zone(p["box"])
+        has_helmet = any(boxes_overlap_ratio(zone, hb) > 0.5 for hb in helmet_boxes)
+        color = (124, 166, 73) if has_helmet else (65, 82, 225)
+        if not has_helmet:
+            violations += 1
+        tag = "helm terpasang" if has_helmet else "tidak pakai helm"
+        _draw_box(drawn, p["box"], color, f"{tag} {p['conf'] * 100:.0f}%")
+
+    for hb in helmet_boxes:
+        cv2.rectangle(drawn, (hb[0], hb[1]), (hb[2], hb[3]), (58, 169, 242), 1)
 
     return drawn, violations, total
 
@@ -393,20 +472,58 @@ def page_dashboard():
 # ========================================================================
 def page_detection(model):
     class_names = list(model.names.values()) if model else []
-    if model and not st.session_state.violation_classes:
-        guess = [c for c in class_names if any(k in c.lower() for k in ["head", "no", "without", "tanpa"])]
-        st.session_state.violation_classes = guess or class_names[:1]
+    if class_names and class_names != st.session_state.get("_last_class_names"):
+        violation_guess, helmet_guess, person_guess, _ = classify_semantics(class_names)
+        st.session_state.violation_classes = violation_guess
+        st.session_state.helmet_classes = helmet_guess
+        st.session_state.person_classes = person_guess
+        st.session_state.detection_mode = "class" if violation_guess else ("overlap" if helmet_guess and person_guess else "class")
+        st.session_state._last_class_names = class_names
 
+    mode_options = {
+        "class": "Berdasarkan kelas (model punya kelas eksplisit 'tanpa helm')",
+        "overlap": "Berdasarkan posisi (model hanya punya kelas 'helm' & 'orang')",
+    }
     with st.expander("⚙️ Parameter deteksi", expanded=False):
-        c1, c2, c3 = st.columns(3)
+        st.caption(
+            f"Kelas terdeteksi pada model — helm: `{', '.join(st.session_state.helmet_classes) or '-'}` · "
+            f"orang: `{', '.join(st.session_state.person_classes) or '-'}` · "
+            f"tanpa-helm: `{', '.join(st.session_state.violation_classes) or '-'}`"
+        )
+        st.session_state.detection_mode = st.radio(
+            "Metode deteksi pelanggaran", list(mode_options.keys()),
+            format_func=lambda k: mode_options[k],
+            index=list(mode_options.keys()).index(st.session_state.detection_mode)
+            if st.session_state.detection_mode in mode_options else 0,
+            horizontal=False,
+        )
+
+        c1, c2 = st.columns(2)
         with c1:
             st.session_state.conf_threshold = st.slider("Ambang keyakinan (confidence)", 0.1, 1.0, st.session_state.conf_threshold, 0.05)
         with c2:
             st.session_state.iou_threshold = st.slider("Ambang IoU", 0.1, 1.0, st.session_state.iou_threshold, 0.05)
-        with c3:
+
+        if st.session_state.detection_mode == "class":
             st.session_state.violation_classes = st.multiselect(
-                "Kelas yang dianggap pelanggaran", class_names, default=st.session_state.violation_classes
+                "Kelas yang berarti TIDAK memakai helm", class_names, default=st.session_state.violation_classes,
+                help="Pilih hanya kelas yang menandakan kepala tanpa helm (mis. 'head' atau 'no-helmet'). "
+                     "Jangan pilih kelas 'helmet' — helm yang terdeteksi berarti PATUH, bukan pelanggaran.",
             )
+            if not st.session_state.violation_classes:
+                st.warning("Belum ada kelas 'tanpa helm' dipilih — semua deteksi akan dianggap patuh. Pilih kelasnya di atas.")
+        else:
+            hc1, hc2 = st.columns(2)
+            with hc1:
+                st.session_state.helmet_classes = st.multiselect(
+                    "Kelas yang berarti helm terpasang", class_names, default=st.session_state.helmet_classes
+                )
+            with hc2:
+                st.session_state.person_classes = st.multiselect(
+                    "Kelas yang berarti orang/pekerja", class_names, default=st.session_state.person_classes
+                )
+            if not st.session_state.helmet_classes or not st.session_state.person_classes:
+                st.warning("Pilih kelas 'helm' dan 'orang' agar sistem bisa menyimpulkan siapa yang tidak memakai helm.")
 
     tab_img, tab_vid, tab_cam, tab_cctv = st.tabs(["📷 Gambar", "🎥 Video", "🎦 Webcam", "📡 CCTV (RTSP)"])
 
@@ -420,6 +537,15 @@ def page_detection(model):
         detect_cctv(model)
 
 
+def current_det_config():
+    return {
+        "mode": st.session_state.detection_mode,
+        "violation_classes": st.session_state.violation_classes,
+        "helmet_classes": st.session_state.helmet_classes,
+        "person_classes": st.session_state.person_classes,
+    }
+
+
 def detect_image(model):
     uploaded = st.file_uploader("Unggah gambar", type=["jpg", "jpeg", "png"], key="img_uploader")
     if uploaded is None:
@@ -428,7 +554,7 @@ def detect_image(model):
     pil_img = Image.open(uploaded).convert("RGB")
     frame_bgr = cv2.cvtColor(np.array(pil_img), cv2.COLOR_RGB2BGR)
     drawn, violations, total = run_detection(
-        model, frame_bgr, st.session_state.conf_threshold, st.session_state.iou_threshold, st.session_state.violation_classes
+        model, frame_bgr, st.session_state.conf_threshold, st.session_state.iou_threshold, current_det_config()
     )
     st.image(drawn, channels="BGR", use_container_width=True)
     show_result_summary(violations, total)
@@ -460,7 +586,7 @@ def detect_video(model):
             idx += 1
             if idx % frame_skip == 0:
                 drawn, violations, total = run_detection(
-                    model, frame, st.session_state.conf_threshold, st.session_state.iou_threshold, st.session_state.violation_classes
+                    model, frame, st.session_state.conf_threshold, st.session_state.iou_threshold, current_det_config()
                 )
                 frame_slot.image(drawn, channels="BGR", use_container_width=True)
                 session_violations += violations
@@ -510,7 +636,7 @@ def detect_live(model, source, label):
             st.warning("Sinyal kamera terputus.")
             break
         drawn, violations, total = run_detection(
-            model, frame, st.session_state.conf_threshold, st.session_state.iou_threshold, st.session_state.violation_classes
+            model, frame, st.session_state.conf_threshold, st.session_state.iou_threshold, current_det_config()
         )
         frame_slot.image(drawn, channels="BGR", use_container_width=True)
         session_total += total
