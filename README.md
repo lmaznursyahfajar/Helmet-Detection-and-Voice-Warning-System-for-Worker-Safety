@@ -1,43 +1,81 @@
-# 🪖 Helmet Detection System
+# HelmGuard — Sistem Monitoring Kepatuhan Helm Keselamatan
 
-Aplikasi berbasis web interaktif menggunakan **Streamlit** dan model komputer visi **YOLO** untuk mendeteksi penggunaan helm keselamatan (seperti pada area konstruksi atau pengendara). Sistem ini secara otomatis mendeteksi pelanggaran (kondisi tanpa helm), memberikan peringatan suara (*voice warning*) menggunakan Text-to-Speech (gTTS), serta mencatat riwayat pelanggaran ke dalam file Excel.
+Aplikasi Streamlit untuk mendeteksi kepatuhan penggunaan helm keselamatan
+menggunakan model YOLO, dilengkapi dashboard, alarm suara, log pelanggaran,
+dan bukti foto otomatis. Dirancang untuk dipakai langsung di area kerja
+atau tambang, bukan hanya demo.
 
----
+## Apa yang berubah dari versi awal
 
-## ✨ Fitur Utama
+- **Log tidak lagi bikin lag.** Versi awal membuka & menulis ulang file
+  Excel penuh setiap ada satu frame pelanggaran — di mode video/webcam ini
+  bisa membekukan aplikasi. Sekarang log ditulis sebagai baris CSV yang
+  ditambahkan langsung (append), jauh lebih ringan untuk stream terus-menerus.
+- **Alarm tidak lagi bergantung penuh pada internet.** gTTS butuh koneksi
+  internet setiap kali dipanggil — masalah nyata di lokasi tambang dengan
+  sinyal terbatas. Sekarang suara di-cache, dan jika gTTS gagal/tidak ada
+  internet, sistem otomatis memakai nada bip peringatan yang dibuat secara
+  lokal tanpa koneksi sama sekali.
+- **Bug warna kotak deteksi pada mode gambar sudah diperbaiki** (sebelumnya
+  kotak merah bisa tampil biru karena urutan channel warna RGB vs BGR tertukar).
+- **Kelas "tidak pakai helm" tidak lagi di-hardcode** ke `"head"` — sekarang
+  dibaca otomatis dari model dan bisa dipilih sendiri, jadi berfungsi untuk
+  model YOLO apa pun, bukan cuma satu model tertentu.
+- **Fitur baru untuk kebutuhan lapangan:** dashboard tren pelanggaran,
+  bukti foto otomatis per kejadian, riwayat yang bisa difilter & diekspor
+  (CSV/Excel), dukungan input CCTV via RTSP, frame-skip untuk mempercepat
+  pemrosesan video, dan halaman Pengaturan untuk mengganti model/lokasi/teks
+  peringatan tanpa mengedit kode.
 
-- **🔍 Multi-Mode Input**:
-  - **📷 Gambar**: Unggah file gambar (`.jpg`, `.jpeg`, `.png`) untuk diproses.
-  - **🎥 Video**: Unggah file video (`.mp4`, `.avi`, `.mov`) lengkap dengan indikator kemajuan (*progress bar*).
-  - **📹 Webcam**: Deteksi langsung secara *real-time* menggunakan kamera internal/eksternal.
-- **🔊 Peringatan Suara Otomatis**: Memutar pesan suara (*"Harap gunakan helm untuk keselamatan Anda"*) via gTTS ketika pelanggaran terdeteksi, dilengkapi fitur *cooldown* 5 detik untuk mencegah suara berulang secara berlebihan.
-- **📊 Logging Pelanggaran Otomatis**: Setiap pelanggaran yang terdeteksi pada media akan otomatis dicatat ke dalam berkas Excel (`pelanggaran_helm.xlsx`) beserta timestamp waktu kejadian.
-- **⚙️ Konfigurasi Fleksibel**: Pengaturan ambang batas kepercayaan (*Confidence Threshold*) melalui *slider* di sidebar.
+## Instalasi
 
----
+```bash
+python -m venv venv
+source venv/bin/activate      # Windows: venv\Scripts\activate
+pip install -r requirements.txt
+```
 
-## 📂 Berkas & Asset yang Dibutuhkan
+Letakkan berkas bobot model (`.pt`) hasil training YOLO Anda di folder
+aplikasi ini (sejajar dengan `app.py`). Aplikasi akan otomatis
+mendeteksinya di halaman **Pengaturan**, atau bisa diunggah langsung dari
+antarmuka.
 
-Pastikan file berikut berada di dalam direktori proyek Anda sebelum menjalankan aplikasi:
+## Menjalankan aplikasi
 
-1. **`app.py`**: File utama aplikasi Streamlit.
-2. **`bestt.pt`**: Weights model YOLO yang telah dilatih untuk mendeteksi helm / kepala.
-3. **`pelanggaran_helm.xlsx`**: File catat riwayat pelanggaran (dibuat otomatis jika belum ada).
+```bash
+streamlit run app.py
+```
 
----
+Buka `http://localhost:8501` di browser.
 
-## 📦 Prasyarat & Instalasi
+## Catatan penting untuk deployment di tambang/lokasi kerja
 
-### 1. Buat File `requirements.txt`
+1. **Kamera lokal vs CCTV.** Mode "Webcam" hanya bisa mengakses kamera pada
+   perangkat yang menjalankan Streamlit secara langsung — ini cocok kalau
+   aplikasi dijalankan di PC/laptop/mini-PC yang terpasang di lokasi. Kalau
+   aplikasi dijalankan di server terpusat dan kamera ada di lapangan,
+   gunakan tab **CCTV (RTSP)** dan masukkan URL stream kamera
+   (`rtsp://user:pass@ip:554/stream1`).
+2. **Koneksi internet terbatas.** Alarm suara punya cadangan offline
+   otomatis (lihat di atas). Model YOLO dan seluruh proses deteksi berjalan
+   lokal, tidak butuh internet sama sekali setelah paket ter-install.
+3. **Penyimpanan.** Log (`logs/pelanggaran_log.csv`) dan bukti foto
+   (`snapshots/`) tersimpan lokal di folder aplikasi. Untuk pemakaian
+   jangka panjang, jadwalkan backup berkala folder ini, atau pindahkan ke
+   penyimpanan jaringan.
+4. **Performa.** Untuk video/CCTV resolusi tinggi, naikkan nilai
+   "Proses tiap N frame" di tab Video, atau turunkan resolusi input kamera,
+   supaya deteksi tetap real-time di perangkat dengan GPU terbatas.
+5. **Multi-lokasi.** Isi "Nama lokasi/situs" di halaman Pengaturan agar log
+   dari beberapa titik pemasangan bisa dibedakan saat digabungkan.
 
-Buat file bernama `requirements.txt` pada direktori proyek Anda dan tambahkan pustaka berikut:
+## Struktur folder
 
-```text
-streamlit
-ultralytics
-opencv-python
-numpy
-pillow
-pandas
-openpyxl
-gtts
+```
+helmet-monitor/
+├── app.py                  # Aplikasi utama
+├── requirements.txt
+├── .streamlit/config.toml  # Tema bawaan Streamlit
+├── logs/pelanggaran_log.csv
+└── snapshots/               # Bukti foto otomatis
+```
